@@ -16,4 +16,4 @@ jobs:
       with:
         bundle: filen.flatpak
         manifest-path: io.filen.Filen.metainfo.xml
-        cache-key: flatpak-builder-${{ github.sha }}
+        #cache-key: flatpak-builder-${{ github.sha }}
