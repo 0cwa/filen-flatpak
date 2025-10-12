@@ -18,7 +18,7 @@ finish-args:
   - --share=network
   - --talk-name=org.kde.StatusNotifierWatcher # Tray functionalities on KDE
   - --talk-name=com.canonical.AppMenu.Registrar
-  - --filesystem=xdg-download
+  - --filesystem=home
   - --env=XCURSOR_PATH=/run/host/user-share/icons:/run/host/share/icons # This is used to show the correct cursor on Wayland
 
 modules:
