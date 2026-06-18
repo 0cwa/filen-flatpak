@@ -154,11 +154,11 @@ jobs:
             local tree="$1"
             local output="$2"
 
-            {
+            (
               cd "$tree"
               find . -xdev -printf '%y %m %U %G %s %p -> %l\n' | LC_ALL=C sort
               find . -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0 --no-run-if-empty sha256sum
-            } > "$output"
+            ) > "$output"
           }
 
           make_manifest reproducibility-check/release-tree reproducibility-check/release.manifest
