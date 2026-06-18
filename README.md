@@ -12,4 +12,4 @@ socket.
 
 ## Tray icons
 
-To get a working Tray Icon on GNOME, install the [appindicator-support](https://extensions.gnome.org/extension/615/appindicator-support/) extension.
+Tray icons work on KDE - To get a working Tray Icon on GNOME, install the [appindicator-support](https://extensions.gnome.org/extension/615/appindicator-support/) extension.
