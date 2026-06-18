@@ -1,0 +1,129 @@
+name: Release Flatpak
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, for example v1.2.3"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and verify ${{ matrix.variant.arch }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.variant.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Set reproducible build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Build release bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: filen-${{ matrix.variant.arch }}.flatpak
+          manifest-path: io.filen.Filen.yml
+          arch: ${{ matrix.variant.arch }}
+          build-dir: builddir-${{ matrix.variant.arch }}-release
+          repo-dir: repo-${{ matrix.variant.arch }}-release
+          state-dir: .flatpak-builder-${{ matrix.variant.arch }}-release
+          cache: false
+          restore-cache: false
+          upload-artifact: false
+          verbose: true
+
+      - name: Build reproducibility check bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: filen-${{ matrix.variant.arch }}.repro.flatpak
+          manifest-path: io.filen.Filen.yml
+          arch: ${{ matrix.variant.arch }}
+          build-dir: builddir-${{ matrix.variant.arch }}-repro
+          repo-dir: repo-${{ matrix.variant.arch }}-repro
+          state-dir: .flatpak-builder-${{ matrix.variant.arch }}-repro
+          cache: false
+          restore-cache: false
+          upload-artifact: false
+          verbose: true
+
+      - name: Verify reproducible bundle hash
+        run: |
+          set -euo pipefail
+
+          release_bundle="filen-${{ matrix.variant.arch }}.flatpak"
+          repro_bundle="filen-${{ matrix.variant.arch }}.repro.flatpak"
+
+          sha256sum "$release_bundle" "$repro_bundle" | tee "filen-${{ matrix.variant.arch }}.reproducibility.txt"
+
+          release_hash="$(sha256sum "$release_bundle" | cut -d ' ' -f 1)"
+          repro_hash="$(sha256sum "$repro_bundle" | cut -d ' ' -f 1)"
+
+          if [ "$release_hash" != "$repro_hash" ]; then
+            echo "Release bundle is not reproducible for ${{ matrix.variant.arch }}." >&2
+            exit 1
+          fi
+
+          sha256sum "$release_bundle" > "$release_bundle.sha256"
+
+      - name: Upload verified bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: filen-flatpak-${{ matrix.variant.arch }}
+          path: |
+            filen-${{ matrix.variant.arch }}.flatpak
+            filen-${{ matrix.variant.arch }}.flatpak.sha256
+            filen-${{ matrix.variant.arch }}.reproducibility.txt
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download verified bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: filen-flatpak-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+
+          sha256sum -c *.sha256
+          sha256sum *.flatpak > SHA256SUMS
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" dist/* --clobber
+          else
+            gh release create "$TAG_NAME" dist/* --verify-tag --title "$TAG_NAME" --generate-notes
+          fi
