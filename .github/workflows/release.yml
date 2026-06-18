@@ -34,9 +34,22 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
 
       - name: Set reproducible build timestamp
-        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+        run: |
+          set -euo pipefail
+
+          commit="$(git rev-parse --verify HEAD^{commit})"
+          source_date_epoch="$(git show -s --format=%ct "$commit")"
+
+          if [[ ! "$source_date_epoch" =~ ^[0-9]+$ ]]; then
+            echo "Could not determine a numeric SOURCE_DATE_EPOCH for $commit." >&2
+            exit 1
+          fi
+
+          echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
+          echo "Using SOURCE_DATE_EPOCH=$source_date_epoch from commit $commit."
 
       - name: Build release bundle
         uses: flatpak/flatpak-github-actions/flatpak-builder@v6
