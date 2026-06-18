@@ -4,10 +4,11 @@ on:
   push:
     tags:
       - "v*"
+      - "filen-v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to release, for example v1.2.3"
+        description: "Existing tag to release, for example filen-v1.2.3"
         required: true
         type: string
 

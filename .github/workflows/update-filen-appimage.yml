@@ -6,9 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
   contents: write
-  pull-requests: write
 
 jobs:
   update:
@@ -16,6 +14,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN || github.token }}
 
       - uses: actions/setup-node@v5
         with:
@@ -27,33 +29,36 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/update-filen-appimage.js
 
-      - name: Open update pull request
+      - name: Commit update and tag release
         env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.update.outputs.version }}
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- io.filen.Filen.yml; then
-            echo "Manifest already points at Filen ${VERSION}."
-            exit 0
-          fi
-
-          branch="update/filen-appimage-${VERSION}"
+          tag="filen-${VERSION}"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$branch"
-          git add io.filen.Filen.yml
-          git commit -m "chore: update Filen AppImage to ${VERSION}"
-          git push --force-with-lease origin "$branch"
 
-          if [ "$(gh pr list --head "$branch" --json number --jq length)" -eq 0 ]; then
-            gh pr create \
-              --base main \
-              --head "$branch" \
-              --title "chore: update Filen AppImage to ${VERSION}" \
-              --body "Updates the pinned Filen AppImage URLs and SHA256 hashes to upstream ${VERSION}."
+          if git diff --quiet -- io.filen.Filen.yml; then
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+              echo "Manifest already points at Filen ${VERSION}, and release tag ${tag} already exists."
+              exit 0
+            fi
+
+            echo "Manifest already points at Filen ${VERSION}; creating missing release tag ${tag}."
+            git tag -a "$tag" -m "Filen ${VERSION}"
+            git push origin "$tag"
+            exit 0
           fi
 
-          gh workflow run build.yml --ref "$branch"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Release tag ${tag} already exists." >&2
+            exit 1
+          fi
+
+          git add io.filen.Filen.yml
+          git commit -m "chore: update Filen AppImage to ${VERSION}"
+          git tag -a "$tag" -m "Filen ${VERSION}"
+          git push origin HEAD:main
+          git push origin "$tag"
