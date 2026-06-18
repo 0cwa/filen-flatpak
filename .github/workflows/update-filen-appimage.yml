@@ -1,0 +1,59 @@
+name: Update Filen AppImage
+
+on:
+  schedule:
+    - cron: "20 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: Check latest upstream AppImage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Update manifest pins
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/update-filen-appimage.js
+
+      - name: Open update pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.update.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- io.filen.Filen.yml; then
+            echo "Manifest already points at Filen ${VERSION}."
+            exit 0
+          fi
+
+          branch="update/filen-appimage-${VERSION}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add io.filen.Filen.yml
+          git commit -m "chore: update Filen AppImage to ${VERSION}"
+          git push --force-with-lease origin "$branch"
+
+          if [ "$(gh pr list --head "$branch" --json number --jq length)" -eq 0 ]; then
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "chore: update Filen AppImage to ${VERSION}" \
+              --body "Updates the pinned Filen AppImage URLs and SHA256 hashes to upstream ${VERSION}."
+          fi
+
+          gh workflow run build.yml --ref "$branch"
