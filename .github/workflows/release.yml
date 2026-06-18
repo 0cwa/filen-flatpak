@@ -37,8 +37,11 @@ jobs:
           fetch-depth: 0
 
       - name: Set reproducible build timestamp
+        shell: bash
         run: |
           set -euo pipefail
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
           commit="$(git rev-parse --verify HEAD^{commit})"
           source_date_epoch="$(git show -s --format=%ct "$commit")"
