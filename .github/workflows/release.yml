@@ -145,7 +145,7 @@ jobs:
           } | tee -a "$log"
 
           rm -rf reproducibility-check
-          mkdir -p reproducibility-check/release-tree reproducibility-check/repro-tree
+          mkdir -p reproducibility-check
 
           ostree --repo="$release_repo" checkout "$release_commit" reproducibility-check/release-tree
           ostree --repo="$repro_repo" checkout "$repro_commit" reproducibility-check/repro-tree
