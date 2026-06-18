@@ -82,23 +82,94 @@ jobs:
           upload-artifact: false
           verbose: true
 
-      - name: Verify reproducible bundle hash
+      - name: Verify reproducible build contents
+        shell: bash
         run: |
           set -euo pipefail
 
           release_bundle="filen-${{ matrix.variant.arch }}.flatpak"
           repro_bundle="filen-${{ matrix.variant.arch }}.repro.flatpak"
+          release_repo="repo-${{ matrix.variant.arch }}-release"
+          repro_repo="repo-${{ matrix.variant.arch }}-repro"
+          log="filen-${{ matrix.variant.arch }}.reproducibility.txt"
 
-          sha256sum "$release_bundle" "$repro_bundle" | tee "filen-${{ matrix.variant.arch }}.reproducibility.txt"
+          {
+            echo "Bundle checksums:"
+            sha256sum "$release_bundle" "$repro_bundle"
+            echo
+          } | tee "$log"
 
           release_hash="$(sha256sum "$release_bundle" | cut -d ' ' -f 1)"
           repro_hash="$(sha256sum "$repro_bundle" | cut -d ' ' -f 1)"
 
           if [ "$release_hash" != "$repro_hash" ]; then
-            echo "Release bundle is not reproducible for ${{ matrix.variant.arch }}." >&2
+            {
+              echo "Bundle files are not byte-identical."
+              echo "Continuing with Flatpak ref content verification because build-bundle output can contain nondeterministic transport metadata."
+              echo
+            } | tee -a "$log"
+          fi
+
+          mapfile -t release_refs < <(ostree --repo="$release_repo" refs | grep '^app/io\.filen\.Filen/')
+          mapfile -t repro_refs < <(ostree --repo="$repro_repo" refs | grep '^app/io\.filen\.Filen/')
+
+          if [ "${#release_refs[@]}" -ne 1 ] || [ "${#repro_refs[@]}" -ne 1 ]; then
+            {
+              echo "Expected exactly one app ref in each repo."
+              echo "Release refs: ${release_refs[*]:-(none)}"
+              echo "Repro refs: ${repro_refs[*]:-(none)}"
+            } | tee -a "$log" >&2
             exit 1
           fi
 
+          release_ref="${release_refs[0]}"
+          repro_ref="${repro_refs[0]}"
+
+          if [ "$release_ref" != "$repro_ref" ]; then
+            {
+              echo "Flatpak refs differ."
+              echo "Release ref: $release_ref"
+              echo "Repro ref: $repro_ref"
+            } | tee -a "$log" >&2
+            exit 1
+          fi
+
+          release_commit="$(ostree --repo="$release_repo" rev-parse "$release_ref")"
+          repro_commit="$(ostree --repo="$repro_repo" rev-parse "$repro_ref")"
+
+          {
+            echo "Flatpak ref: $release_ref"
+            echo "Release OSTree commit: $release_commit"
+            echo "Repro OSTree commit: $repro_commit"
+            echo
+          } | tee -a "$log"
+
+          rm -rf reproducibility-check
+          mkdir -p reproducibility-check/release-tree reproducibility-check/repro-tree
+
+          ostree --repo="$release_repo" checkout "$release_commit" reproducibility-check/release-tree
+          ostree --repo="$repro_repo" checkout "$repro_commit" reproducibility-check/repro-tree
+
+          make_manifest() {
+            local tree="$1"
+            local output="$2"
+
+            {
+              cd "$tree"
+              find . -xdev -printf '%y %m %U %G %s %p -> %l\n' | LC_ALL=C sort
+              find . -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0 --no-run-if-empty sha256sum
+            } > "$output"
+          }
+
+          make_manifest reproducibility-check/release-tree reproducibility-check/release.manifest
+          make_manifest reproducibility-check/repro-tree reproducibility-check/repro.manifest
+
+          if ! diff -u reproducibility-check/release.manifest reproducibility-check/repro.manifest >> "$log"; then
+            echo "Release build contents are not reproducible for ${{ matrix.variant.arch }}." | tee -a "$log" >&2
+            exit 1
+          fi
+
+          echo "Release build contents are reproducible for ${{ matrix.variant.arch }}." | tee -a "$log"
           sha256sum "$release_bundle" > "$release_bundle.sha256"
 
       - name: Upload verified bundle
