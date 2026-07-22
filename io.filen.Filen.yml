@@ -47,18 +47,18 @@ modules:
         path: io.filen.Filen.metainfo.xml
 
       - type: file
-        url: https://github.com/FilenCloudDienste/filen-desktop/releases/download/v3.0.52/Filen_linux_x86_64.AppImage
+        url: https://github.com/FilenCloudDienste/filen-desktop/releases/download/v3.0.53/Filen_linux_x86_64.AppImage
         dest-filename: Filen.AppImage
-        sha256: b07f79c4d02e5c8bea8b7762fea23f07c2d12bb336023e7ea429d288dfe63156
+        sha256: 888298db82fa43d7be3feeeba86a2f745dbc1ffdf1efabe2cca5144a996461f2
         only-arches: [x86_64]
         x-checker-data:
           type: electron-updater
           url: https://github.com/FilenCloudDienste/filen-desktop/releases/latest/download/latest-linux.yml
 
       - type: file
-        url: https://github.com/FilenCloudDienste/filen-desktop/releases/download/v3.0.52/Filen_linux_arm64.AppImage
+        url: https://github.com/FilenCloudDienste/filen-desktop/releases/download/v3.0.53/Filen_linux_arm64.AppImage
         dest-filename: Filen.AppImage
-        sha256: ca94a125d28840f64ac76f6ea5de010f8e2f7c6d5d50abc187e3d9daf6948c57
+        sha256: 5821bd280e89da9cd5362df91d495bb99cd7630b85f51019033c72eb0664e89d
         only-arches: [aarch64]
         x-checker-data:
           type: electron-updater
