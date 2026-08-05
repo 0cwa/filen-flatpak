@@ -28,13 +28,13 @@ modules:
       - chmod +x Filen.AppImage
       - ./Filen.AppImage --appimage-extract
       - desktop-file-edit --set-key="Exec" --set-value="startfilen %U" --set-icon=$FLATPAK_ID
-        squashfs-root/@filendesktop.desktop
+        squashfs-root/Filen.desktop
       - |
         for icon in 16 24 32 48 64 128 256 512; do
-          install -D squashfs-root/usr/share/icons/hicolor/${icon}x${icon}/apps/@filendesktop.png \
+          install -D squashfs-root/usr/share/icons/hicolor/${icon}x${icon}/apps/Filen.png \
               /app/share/icons/hicolor/${icon}x${icon}/apps/io.filen.Filen.png
         done
-      - install -D squashfs-root/@filendesktop.desktop /app/share/applications/io.filen.Filen.desktop
+      - install -D squashfs-root/Filen.desktop /app/share/applications/io.filen.Filen.desktop
       - install -Dm755 startfilen /app/bin/startfilen
       - install -D io.filen.Filen.metainfo.xml -t /app/share/metainfo/
       - mv squashfs-root /app/bin/filen
