@@ -69,6 +69,7 @@ jobs:
           flatpak remote-add --user --if-not-exists flathub "$RUNTIME_REPO"
 
           flatpak-builder \
+            --disable-rofiles-fuse \
             --force-clean \
             --install-deps-from=flathub \
             --arch="${{ matrix.variant.arch }}" \
