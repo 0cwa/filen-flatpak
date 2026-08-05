@@ -1,0 +1,366 @@
+name: Publish Flatpak Repository to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: filen-flatpak-pages
+  cancel-in-progress: true
+
+env:
+  APP_ID: io.filen.Filen
+  COLLECTION_ID: io.filen.Filen.Repository
+  RUNTIME_REPO: https://flathub.org/repo/flathub.flatpakrepo
+
+jobs:
+  build:
+    name: Build unsigned OSTree repo (${{ matrix.variant.arch }})
+    if: ${{ github.ref == 'refs/heads/main' && (vars.PUBLISH_FLATPAK_REPO == 'true' || github.event_name == 'workflow_dispatch') }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.variant.runner }}
+    steps:
+      # Pin the source to the commit that triggered this run. No secrets are
+      # available in this job; it only produces unsigned repository data.
+      - name: Check out triggering commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set stable build timestamp
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          test "$source_date_epoch" -gt 0
+          echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
+
+      - name: Restore architecture repository history
+        id: build-repo-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: repo-${{ matrix.variant.arch }}
+          key: filen-flatpak-build-${{ matrix.variant.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            filen-flatpak-build-${{ matrix.variant.arch }}-${{ github.ref_name }}-
+
+      - name: Build unsigned architecture repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          flatpak remote-add --user --if-not-exists flathub "$RUNTIME_REPO"
+
+          flatpak-builder \
+            --force-clean \
+            --install-deps-from=flathub \
+            --arch="${{ matrix.variant.arch }}" \
+            --repo="repo-${{ matrix.variant.arch }}" \
+            --collection-id="$COLLECTION_ID" \
+            "builddir-${{ matrix.variant.arch }}" \
+            io.filen.Filen.yml
+
+          expected_ref="app/${APP_ID}/${{ matrix.variant.arch }}/master"
+          ostree rev-parse \
+            --repo="repo-${{ matrix.variant.arch }}" \
+            "$expected_ref" >/dev/null
+
+          printf '%s\n' "$expected_ref" > "filen-ref-${{ matrix.variant.arch }}.txt"
+
+          # Upload one archive so the repository's object layout is preserved
+          # when the untrusted build result crosses the job boundary.
+          tar \
+            --sort=name \
+            --mtime="@${SOURCE_DATE_EPOCH}" \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -czf "filen-ostree-${{ matrix.variant.arch }}.tar.gz" \
+            "repo-${{ matrix.variant.arch }}"
+
+      - name: Upload unsigned architecture repository
+        uses: actions/upload-artifact@v7
+        with:
+          name: filen-ostree-${{ matrix.variant.arch }}
+          path: |
+            filen-ostree-${{ matrix.variant.arch }}.tar.gz
+            filen-ref-${{ matrix.variant.arch }}.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+      - name: Save architecture repository history
+        uses: actions/cache/save@v4
+        with:
+          path: repo-${{ matrix.variant.arch }}
+          key: ${{ steps.build-repo-cache.outputs.cache-primary-key }}
+
+  aggregate:
+    name: Sign and aggregate multi-architecture repository
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    steps:
+      - name: Check out triggering commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set stable build timestamp
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          source_date_epoch="$(git show -s --format=%ct "$GITHUB_SHA")"
+          test "$source_date_epoch" -gt 0
+          echo "SOURCE_DATE_EPOCH=$source_date_epoch" >> "$GITHUB_ENV"
+
+      - name: Import Flatpak repository signing key
+        env:
+          FLATPAK_GPG_PRIVATE_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
+          FLATPAK_GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${FLATPAK_GPG_PRIVATE_KEY:-}" ] || [ -z "${FLATPAK_GPG_KEY_ID:-}" ]; then
+            echo "Set FLATPAK_GPG_PRIVATE_KEY and FLATPAK_GPG_KEY_ID before publishing." >&2
+            exit 1
+          fi
+
+          gnupg_home="$RUNNER_TEMP/gnupg"
+          mkdir -p "$gnupg_home"
+          chmod 700 "$gnupg_home"
+          printf '%s' "$FLATPAK_GPG_PRIVATE_KEY" | gpg --batch --homedir "$gnupg_home" --import
+          gpg --batch --homedir "$gnupg_home" --list-secret-keys "$FLATPAK_GPG_KEY_ID" >/dev/null
+
+          gpg --batch --homedir "$gnupg_home" --export "$FLATPAK_GPG_KEY_ID" \
+            | base64 --wrap=0 > "$RUNNER_TEMP/filen-flatpak.gpg.b64"
+
+          echo "GNUPGHOME=$gnupg_home" >> "$GITHUB_ENV"
+
+      - name: Download unsigned architecture repositories
+        uses: actions/download-artifact@v8
+        with:
+          pattern: filen-ostree-*
+          path: inputs
+          merge-multiple: false
+
+      - name: Restore previous final repository
+        id: repo-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: site/repo
+          key: filen-flatpak-pages-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            filen-flatpak-pages-${{ github.ref_name }}-
+
+      - name: Merge and sign exact architecture refs
+        env:
+          FLATPAK_GPG_KEY_ID: ${{ secrets.FLATPAK_GPG_KEY_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p site
+          if [ ! -f site/repo/config ]; then
+            ostree init \
+              --repo=site/repo \
+              --mode=archive-z2 \
+              --collection-id="$COLLECTION_ID"
+          fi
+
+          for arch in x86_64 aarch64; do
+            artifact_dir="inputs/filen-ostree-${arch}"
+            archive="$artifact_dir/filen-ostree-${arch}.tar.gz"
+            ref_file="$artifact_dir/filen-ref-${arch}.txt"
+            expected_ref="app/${APP_ID}/${arch}/master"
+
+            test -s "$archive"
+            test -s "$ref_file"
+            test "$(<"$ref_file")" = "$expected_ref"
+
+            extract_dir="$RUNNER_TEMP/filen-${arch}"
+            mkdir -p "$extract_dir"
+            tar -xzf "$archive" -C "$extract_dir"
+            source_repo="$extract_dir/repo-${arch}"
+            test -f "$source_repo/config"
+            ostree fsck --repo="$source_repo" --all
+            ostree rev-parse --repo="$source_repo" "$expected_ref" >/dev/null
+
+            # Pull only the exact app ref for this architecture. Runtime and
+            # appstream refs from the unsigned source repo are intentionally
+            # not copied into the final public repository.
+            ostree pull-local \
+              --repo=site/repo \
+              --untrusted \
+              --depth=-1 \
+              "$source_repo" \
+              "$expected_ref"
+
+            flatpak build-sign \
+              --gpg-sign="$FLATPAK_GPG_KEY_ID" \
+              --gpg-homedir="$GNUPGHOME" \
+              --arch="$arch" \
+              site/repo \
+              "$APP_ID" \
+              master
+
+            commit="$(ostree rev-parse --repo=site/repo "$expected_ref")"
+            ostree show --repo=site/repo --list-detached-metadata-keys "$commit" \
+              | grep -qx 'ostree.gpgsigs'
+          done
+
+          flatpak build-update-repo \
+            --gpg-sign="$FLATPAK_GPG_KEY_ID" \
+            --gpg-homedir="$GNUPGHOME" \
+            --generate-static-deltas \
+            --collection-id="$COLLECTION_ID" \
+            --deploy-sideload-collection-id \
+            --title="Filen Flatpak" \
+            --comment="Unofficial Flatpak repository for Filen" \
+            --description="Filen packaged as a Flatpak from the upstream AppImage." \
+            --homepage="https://github.com/$GITHUB_REPOSITORY" \
+            --default-branch=master \
+            site/repo
+
+          ostree fsck --repo=site/repo --all
+
+      - name: Generate Pages metadata and index
+        env:
+          FLATPAK_REPO_URL: ${{ vars.FLATPAK_REPO_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pages_url="${FLATPAK_REPO_URL:-}"
+          if [ -z "$pages_url" ]; then
+            repo_name="${GITHUB_REPOSITORY#*/}"
+            if [ "$repo_name" = "${GITHUB_REPOSITORY_OWNER}.github.io" ]; then
+              pages_url="https://${GITHUB_REPOSITORY_OWNER}.github.io"
+            else
+              pages_url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${repo_name}"
+            fi
+          fi
+          pages_url="${pages_url%/}"
+          case "$pages_url" in
+            https://*) ;;
+            *)
+              echo "FLATPAK_REPO_URL must be an HTTPS site root." >&2
+              exit 1
+              ;;
+          esac
+
+          gpg_key="$(<"$RUNNER_TEMP/filen-flatpak.gpg.b64")"
+          escaped_pages_url="$(printf '%s' "$pages_url" | sed 's/[&|\\]/\\&/g')"
+          escaped_repository="$(printf '%s' "$GITHUB_REPOSITORY" | sed 's/[&|\\]/\\&/g')"
+          escaped_gpg_key="$(printf '%s' "$gpg_key" | sed 's/[&|\\]/\\&/g')"
+
+          sed \
+            -e "s|@FLATPAK_REPO_URL@|$escaped_pages_url|g" \
+            -e "s|@GITHUB_REPOSITORY@|$escaped_repository|g" \
+            -e "s|@GPG_KEY@|$escaped_gpg_key|g" \
+            filen.flatpakrepo.in > site/filen.flatpakrepo
+
+          sed \
+            -e "s|@FLATPAK_REPO_URL@|$escaped_pages_url|g" \
+            -e "s|@GITHUB_REPOSITORY@|$escaped_repository|g" \
+            -e "s|@GPG_KEY@|$escaped_gpg_key|g" \
+            filen.flatpakref.in > site/filen.flatpakref
+
+          {
+            printf '%s\n' '<!doctype html>'
+            printf '%s\n' '<html lang="en">'
+            printf '%s\n' '<head>'
+            printf '%s\n' '  <meta charset="utf-8">'
+            printf '%s\n' '  <meta name="viewport" content="width=device-width, initial-scale=1">'
+            printf '%s\n' '  <title>Filen Flatpak Repository</title>'
+            printf '%s\n' '</head>'
+            printf '%s\n' '<body>'
+            printf '%s\n' '  <h1>Filen Flatpak Repository</h1>'
+            printf '%s\n' '  <p><a href="filen.flatpakrepo">Add the Filen Flatpak remote</a></p>'
+            printf '%s\n' '  <p><a href="filen.flatpakref">Install Filen from this remote</a></p>'
+            printf '%s\n' '  <pre>flatpak remote-add --user --if-not-exists filen '
+            printf '%s/filen.flatpakrepo\n' "$pages_url"
+            printf '%s\n' 'flatpak install --user filen io.filen.Filen'
+            printf '%s\n' 'flatpak update --user io.filen.Filen</pre>'
+            printf '%s\n' '</body>'
+            printf '%s\n' '</html>'
+          } > site/index.html
+
+      - name: Validate Pages payload and both architecture refs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s site/repo/summary
+          test -s site/repo/summary.sig
+          test -s site/filen.flatpakrepo
+          test -s site/filen.flatpakref
+          test -s site/index.html
+
+          for arch in x86_64 aarch64; do
+            expected_ref="app/${APP_ID}/${arch}/master"
+            ostree rev-parse --repo=site/repo "$expected_ref" >/dev/null
+            grep -Fq "$expected_ref" <(ostree refs --repo=site/repo --list)
+          done
+
+          if find site -type l -print -quit | grep -q .; then
+            echo "GitHub Pages artifacts must not contain symlinks." >&2
+            exit 1
+          fi
+
+          grep -Eq '^Url=https://[^[:space:]]+/repo/$' site/filen.flatpakrepo
+          grep -Eq '^GPGKey=[A-Za-z0-9+/=]+$' site/filen.flatpakrepo
+          grep -Eq '^Name=io\.filen\.Filen$' site/filen.flatpakref
+          grep -Eq '^Branch=master$' site/filen.flatpakref
+          grep -Eq '^Url=https://[^[:space:]]+/repo/$' site/filen.flatpakref
+          grep -Eq '^RuntimeRepo=https://flathub\.org/repo/flathub\.flatpakrepo$' site/filen.flatpakref
+
+      - name: Save final repository cache
+        uses: actions/cache/save@v4
+        with:
+          path: site/repo
+          key: ${{ steps.repo-cache.outputs.cache-primary-key }}
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: aggregate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v4

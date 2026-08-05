@@ -8,6 +8,7 @@ base: org.electronjs.Electron2.BaseApp
 base-version: *runtime-version
 
 command: startfilen
+branch: master
 separate-locales: false
 
 finish-args:
@@ -27,6 +28,12 @@ modules:
     build-commands:
       - chmod +x Filen.AppImage
       - ./Filen.AppImage --appimage-extract
+      - |
+        find squashfs-root -type f \( -name app-update.yml -o -name dev-app-update.yml \) -delete
+        if find squashfs-root -type f \( -name app-update.yml -o -name dev-app-update.yml \) -print -quit | grep -q .; then
+          echo "Electron updater metadata was not removed from the AppImage payload." >&2
+          exit 1
+        fi
       - desktop-file-edit --set-key="Exec" --set-value="startfilen %U" --set-icon=$FLATPAK_ID
         squashfs-root/Filen.desktop
       - |

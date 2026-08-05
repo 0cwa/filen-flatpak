@@ -1,0 +1,12 @@
+[Flatpak Ref]
+Title=Filen
+Name=io.filen.Filen
+Branch=master
+Url=@FLATPAK_REPO_URL@/repo/
+SuggestRemoteName=filen
+Homepage=https://github.com/@GITHUB_REPOSITORY@
+Comment=Unofficial Flatpak package for Filen
+Description=Filen packaged as a Flatpak from the upstream AppImage.
+RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo
+IsRuntime=false
+GPGKey=@GPG_KEY@

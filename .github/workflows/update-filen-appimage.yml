@@ -23,6 +23,15 @@ jobs:
         with:
           node-version: 24
 
+      - name: Verify downstream workflow token
+        env:
+          DOWNSTREAM_WORKFLOW_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          if [ -z "${DOWNSTREAM_WORKFLOW_TOKEN:-}" ]; then
+            echo "Set the GH_TOKEN secret so updater pushes trigger CI, release, and Pages workflows." >&2
+            exit 1
+          fi
+
       - name: Update manifest pins
         id: update
         env:
